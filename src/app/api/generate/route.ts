@@ -2,11 +2,36 @@ import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
 import { getGoogleFontsUrl } from "@/lib/fonts";
 
-const client = new Anthropic();
+// Vercel function config — extend timeout to 60s (requires Hobby plan or above)
+export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+  const errors: string[] = [];
+
   try {
-    const { brandKit, adConfig, analysis } = await request.json();
+    // Validate API key is present
+    if (!process.env.ANTHROPIC_API_KEY) {
+      console.error("[AdForge] ANTHROPIC_API_KEY is not set");
+      return NextResponse.json(
+        { error: "Server configuration error: API key not configured" },
+        { status: 500 }
+      );
+    }
+
+    const client = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+    });
+
+    const body = await request.json();
+    const { brandKit, adConfig, analysis } = body;
+
+    if (!brandKit || !adConfig) {
+      return NextResponse.json(
+        { error: "Missing required fields: brandKit and adConfig" },
+        { status: 400 }
+      );
+    }
 
     const { format, variationCount, creativeDirection, autoGenerateCopy, headline, bodyCopy, ctaText } = adConfig;
     const { colors, headingFont, bodyFont, tone, logo } = brandKit;
@@ -37,9 +62,10 @@ Headline: "${headline}"
 Body: "${bodyCopy}"
 CTA: "${ctaText}"`;
 
+    // Handle logo properly — send as image block, not text dump
     const logoInstruction = logo
-      ? `Include the brand logo. Use this base64 image as an <img> tag: ${logo}`
-      : "Do not include a logo image.";
+      ? "Include a placeholder area for the brand logo (a styled div with the brand initial) — the logo will be composited separately."
+      : "Do not include a logo placeholder.";
 
     const prompt = `You are an expert Meta ad designer. Generate ${variationCount} ad creative variation(s) as self-contained HTML.
 
@@ -63,15 +89,16 @@ ${copyInstructions}
 
 CRITICAL REQUIREMENTS:
 1. Each variation must be a COMPLETE, self-contained HTML document
-2. The HTML must be exactly ${format.width}px wide and ${format.height}px tall
+2. The root element (html/body) must be exactly ${format.width}px wide and ${format.height}px tall with overflow:hidden
 3. Use Google Fonts via: <link href="${fontsUrl}" rel="stylesheet">
 4. All styling must be inline CSS or in a <style> tag within the HTML
 5. The design must look professional and polished — this is a real ad
 6. Use the brand colors as the dominant palette
 7. Include visual elements like geometric shapes, gradients, or patterns for visual interest (no external images needed)
 8. Text must be crisp and readable at the given dimensions
-9. The CTA should be prominent and well-styled
+9. The CTA should be prominent and well-styled as a button
 10. Each variation should have a distinct layout or visual approach while maintaining brand consistency
+11. Set body margin to 0 and use box-sizing: border-box
 
 LAYOUT GUIDELINES FOR "${creativeDirection}" DIRECTION:
 ${getDirectionGuidelines(creativeDirection)}
@@ -88,6 +115,8 @@ Return ONLY a JSON array with this structure (no markdown, no code blocks, just 
 
 Generate exactly ${variationCount} variation(s). Each must be visually distinct.`;
 
+    console.log(`[AdForge] Generating ${variationCount} variations, format: ${format.name}, direction: ${creativeDirection}`);
+
     const response = await client.messages.create({
       model: "claude-sonnet-4-20250514",
       max_tokens: 16000,
@@ -99,22 +128,50 @@ Generate exactly ${variationCount} variation(s). Each must be visually distinct.
       ],
     });
 
+    console.log(`[AdForge] Claude response received in ${Date.now() - startTime}ms, stop_reason: ${response.stop_reason}`);
+
     const textBlock = response.content.find((b) => b.type === "text");
     if (!textBlock || textBlock.type !== "text") {
+      console.error("[AdForge] No text block in response:", JSON.stringify(response.content.map(b => b.type)));
       return NextResponse.json(
-        { error: "No content generated" },
+        { error: "No content generated — Claude returned an empty response" },
         { status: 500 }
       );
     }
 
     let jsonStr = textBlock.text.trim();
+
     // Handle potential markdown code blocks
     const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (jsonMatch) {
       jsonStr = jsonMatch[1].trim();
     }
 
-    const variations = JSON.parse(jsonStr);
+    // Also handle if response starts with text before JSON
+    const arrayStart = jsonStr.indexOf("[");
+    const arrayEnd = jsonStr.lastIndexOf("]");
+    if (arrayStart > 0 && arrayEnd > arrayStart) {
+      jsonStr = jsonStr.slice(arrayStart, arrayEnd + 1);
+    }
+
+    let variations;
+    try {
+      variations = JSON.parse(jsonStr);
+    } catch (parseError) {
+      console.error("[AdForge] JSON parse failed. Raw response (first 500 chars):", jsonStr.slice(0, 500));
+      return NextResponse.json(
+        { error: "Failed to parse generated ad data. Please try again." },
+        { status: 500 }
+      );
+    }
+
+    if (!Array.isArray(variations) || variations.length === 0) {
+      console.error("[AdForge] Parsed result is not a valid array");
+      return NextResponse.json(
+        { error: "Generated data was empty. Please try again." },
+        { status: 500 }
+      );
+    }
 
     // Add IDs to each variation
     const variationsWithIds = variations.map(
@@ -124,11 +181,36 @@ Generate exactly ${variationCount} variation(s). Each must be visually distinct.
       })
     );
 
+    console.log(`[AdForge] Successfully generated ${variationsWithIds.length} variations in ${Date.now() - startTime}ms`);
+
     return NextResponse.json({ variations: variationsWithIds });
   } catch (error) {
-    console.error("Generation error:", error);
+    const elapsed = Date.now() - startTime;
+    const errMsg = error instanceof Error ? error.message : String(error);
+    console.error(`[AdForge] Generation error after ${elapsed}ms:`, errMsg);
+
+    // Provide specific error messages for common failures
+    if (errMsg.includes("401") || errMsg.includes("authentication")) {
+      return NextResponse.json(
+        { error: "API authentication failed. Check your ANTHROPIC_API_KEY in Vercel environment variables." },
+        { status: 500 }
+      );
+    }
+    if (errMsg.includes("429") || errMsg.includes("rate")) {
+      return NextResponse.json(
+        { error: "Rate limited by Claude API. Please wait a moment and try again." },
+        { status: 429 }
+      );
+    }
+    if (errMsg.includes("timeout") || errMsg.includes("ETIMEDOUT") || elapsed > 55000) {
+      return NextResponse.json(
+        { error: "Request timed out. Try generating fewer variations or a simpler direction." },
+        { status: 504 }
+      );
+    }
+
     return NextResponse.json(
-      { error: "Failed to generate ad creatives" },
+      { error: `Generation failed: ${errMsg}` },
       { status: 500 }
     );
   }

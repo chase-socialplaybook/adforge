@@ -1,10 +1,25 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
 
-const client = new Anthropic();
+// Vercel function config — extend timeout to 60s
+export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
   try {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      console.error("[AdForge] ANTHROPIC_API_KEY is not set");
+      return NextResponse.json(
+        { error: "Server configuration error: API key not configured" },
+        { status: 500 }
+      );
+    }
+
+    const client = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+    });
+
     const { images } = await request.json();
 
     if (!images || !Array.isArray(images) || images.length === 0) {
@@ -85,13 +100,33 @@ Analyze ALL provided images and synthesize into a single analysis that captures 
       jsonStr = jsonMatch[1].trim();
     }
 
-    const analysis = JSON.parse(jsonStr);
+    let analysis;
+    try {
+      analysis = JSON.parse(jsonStr);
+    } catch (parseError) {
+      console.error("[AdForge] Analysis JSON parse failed:", jsonStr.slice(0, 500));
+      return NextResponse.json(
+        { error: "Failed to parse analysis. Please try again." },
+        { status: 500 }
+      );
+    }
 
+    console.log(`[AdForge] Analysis completed in ${Date.now() - startTime}ms`);
     return NextResponse.json({ analysis });
   } catch (error) {
-    console.error("Analysis error:", error);
+    const elapsed = Date.now() - startTime;
+    const errMsg = error instanceof Error ? error.message : String(error);
+    console.error(`[AdForge] Analysis error after ${elapsed}ms:`, errMsg);
+
+    if (errMsg.includes("401") || errMsg.includes("authentication")) {
+      return NextResponse.json(
+        { error: "API authentication failed. Check your ANTHROPIC_API_KEY." },
+        { status: 500 }
+      );
+    }
+
     return NextResponse.json(
-      { error: "Failed to analyze competitor ads" },
+      { error: `Analysis failed: ${errMsg}` },
       { status: 500 }
     );
   }

@@ -47,6 +47,8 @@ interface AdContextType {
   setIsGenerating: (val: boolean) => void;
   generationStage: string;
   setGenerationStage: (stage: string) => void;
+  generationError: string | null;
+  setGenerationError: (error: string | null) => void;
 
   // Reset
   resetAll: () => void;
@@ -96,6 +98,7 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
   const [variations, setVariations] = useState<AdVariation[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationStage, setGenerationStage] = useState("");
+  const [generationError, setGenerationError] = useState<string | null>(null);
 
   const addCompetitorImages = useCallback(async (files: File[]) => {
     const newImages: UploadedImage[] = await Promise.all(
@@ -145,6 +148,7 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
     setVariations([]);
     setIsGenerating(false);
     setGenerationStage("");
+    setGenerationError(null);
   }, [competitorImages]);
 
   return (
@@ -168,6 +172,8 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
         setIsGenerating,
         generationStage,
         setGenerationStage,
+        generationError,
+        setGenerationError,
         resetAll,
       }}
     >

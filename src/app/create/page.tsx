@@ -17,6 +17,7 @@ import {
   Palette,
   Settings,
   Check,
+  AlertCircle,
 } from "lucide-react";
 import { WizardStep } from "@/lib/types";
 
@@ -41,6 +42,8 @@ function CreateContent() {
     setVariations,
     setCompetitorAnalysis,
     competitorAnalysis,
+    generationError,
+    setGenerationError,
   } = useAd();
 
   const stepIndex = steps.findIndex((s) => s.key === currentStep);
@@ -62,7 +65,15 @@ function CreateContent() {
   const handleGenerate = useCallback(async () => {
     setIsGenerating(true);
     setVariations([]);
+    setGenerationError(null);
     setCurrentStep("generate");
+
+    // Helper: fetch with timeout
+    const fetchWithTimeout = (url: string, options: RequestInit, timeoutMs = 90000) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+    };
 
     try {
       let analysis = competitorAnalysis;
@@ -70,7 +81,7 @@ function CreateContent() {
       // Step 1: Analyze competitor ads if we have them
       if (competitorImages.length > 0 && !analysis) {
         setGenerationStage("analyzing");
-        const analyzeRes = await fetch("/api/analyze", {
+        const analyzeRes = await fetchWithTimeout("/api/analyze", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -81,38 +92,55 @@ function CreateContent() {
           const data = await analyzeRes.json();
           analysis = data.analysis;
           setCompetitorAnalysis(analysis);
+        } else {
+          const errData = await analyzeRes.json().catch(() => ({}));
+          console.warn("Analysis failed (continuing without it):", errData.error);
+          // Continue without analysis — it's optional
         }
       }
 
       // Step 2: Plan creative direction
       setGenerationStage("planning");
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 400));
 
       // Step 3: Generate ad compositions
       setGenerationStage("generating");
-      const generateRes = await fetch("/api/generate", {
+      const generateRes = await fetchWithTimeout("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          brandKit,
+          brandKit: {
+            ...brandKit,
+            logo: null, // Don't send logo base64 to avoid payload bloat
+          },
           adConfig,
           analysis,
         }),
       });
 
       if (!generateRes.ok) {
-        throw new Error("Generation failed");
+        const errData = await generateRes.json().catch(() => ({ error: "Unknown error" }));
+        throw new Error(errData.error || `Server error (${generateRes.status})`);
       }
 
       const data = await generateRes.json();
 
+      if (!data.variations || data.variations.length === 0) {
+        throw new Error("No ad variations were generated. Please try again.");
+      }
+
       // Step 4: Finalize
       setGenerationStage("finalizing");
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 400));
 
       setVariations(data.variations);
     } catch (error) {
-      console.error("Generation failed:", error);
+      const message = error instanceof Error ? error.message : "An unexpected error occurred";
+      const displayMessage = message.includes("aborted")
+        ? "Request timed out. Try generating fewer variations or a simpler creative direction."
+        : message;
+      console.error("Generation failed:", message);
+      setGenerationError(displayMessage);
     } finally {
       setIsGenerating(false);
       setGenerationStage("");
@@ -127,6 +155,7 @@ function CreateContent() {
     setCurrentStep,
     setGenerationStage,
     setCompetitorAnalysis,
+    setGenerationError,
   ]);
 
   const canGenerate =
@@ -190,14 +219,29 @@ function CreateContent() {
           )}
           {currentStep === "generate" && !isGenerating && (
             <div className="space-y-6">
+              {/* Error display */}
+              {generationError && (
+                <div className="flex items-start gap-3 rounded-xl border border-red-500/20 bg-red-500/5 p-4">
+                  <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-400" />
+                  <div>
+                    <p className="text-sm font-medium text-red-400">Generation failed</p>
+                    <p className="mt-1 text-sm text-red-400/80">{generationError}</p>
+                  </div>
+                </div>
+              )}
+
               <AdPreview />
               {variations.length > 0 && <ExportControls />}
               {variations.length === 0 && !isGenerating && (
                 <div className="flex flex-col items-center justify-center py-16 text-center">
                   <Sparkles className="mb-4 h-12 w-12 text-muted-foreground/30" />
-                  <h3 className="text-lg font-semibold">Ready to generate</h3>
+                  <h3 className="text-lg font-semibold">
+                    {generationError ? "Try again" : "Ready to generate"}
+                  </h3>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Click the button below to create your ad variations.
+                    {generationError
+                      ? "Adjust your settings or try with fewer variations."
+                      : "Click the button below to create your ad variations."}
                   </p>
                   <Button
                     onClick={handleGenerate}
@@ -206,7 +250,7 @@ function CreateContent() {
                     size="lg"
                   >
                     <Sparkles className="h-4 w-4" />
-                    Generate Ads
+                    {generationError ? "Retry" : "Generate Ads"}
                   </Button>
                 </div>
               )}
