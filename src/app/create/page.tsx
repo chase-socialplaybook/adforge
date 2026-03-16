@@ -111,10 +111,17 @@ function CreateContent() {
         body: JSON.stringify({
           brandKit: {
             ...brandKit,
-            logo: null, // Don't send logo base64 to avoid payload bloat
+            // Send logo so it can be embedded in the ad
           },
-          adConfig,
+          adConfig: {
+            ...adConfig,
+            productImage: null, // sent separately below
+          },
           analysis,
+          // Send competitor images so Claude can SEE and replicate the style
+          competitorImages: competitorImages.map((img) => img.base64),
+          // Send product image for embedding in ads
+          productImage: adConfig.productImage,
         }),
       });
 

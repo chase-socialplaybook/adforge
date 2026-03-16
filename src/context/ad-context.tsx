@@ -75,6 +75,8 @@ const defaultAdConfig: AdConfig = {
   bodyCopy: "",
   ctaText: "Learn More",
   autoGenerateCopy: true,
+  productImage: null,
+  productImageFileName: null,
 };
 
 const AdContext = createContext<AdContextType | undefined>(undefined);

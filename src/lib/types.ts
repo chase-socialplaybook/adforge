@@ -57,6 +57,8 @@ export interface AdConfig {
   bodyCopy: string;
   ctaText: string;
   autoGenerateCopy: boolean;
+  productImage: string | null; // base64 data URL
+  productImageFileName: string | null;
 }
 
 export interface AdVariation {
